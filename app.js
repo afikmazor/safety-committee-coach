@@ -299,7 +299,28 @@ const Voice = {
     }
     return this.browserSpeak(text, rate);
   },
-  stop() { try { Cap.tts && Cap.tts.stop(); } catch (e) { } try { speechSynthesis.cancel(); } catch (e) { } this.speaking = false; },
+  aud: null,
+  silentSrc() {
+    // WAV שקט קצר – לפתיחת השמע במגע הראשון (נדרש באייפון)
+    const n = 800, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf); const w = (o, str) => [...str].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+    w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 8000, true); v.setUint32(28, 16000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
+    let b = ''; new Uint8Array(buf).forEach(x => b += String.fromCharCode(x)); return 'data:audio/wav;base64,' + btoa(b);
+  },
+  unlock() {
+    try { if (!this.aud) { this.aud = new Audio(); this.aud.preload = 'auto'; } if (!this._unlocked) { this.aud.src = this.silentSrc(); const p = this.aud.play(); if (p && p.then) p.then(() => { this._unlocked = true; }).catch(() => { }); } } catch (e) { }
+  },
+  playClip(b64, rate) {
+    return new Promise(res => {
+      try {
+        if (!this.aud) this.aud = new Audio();
+        const a = this.aud; let done = false; const fin = ok => { if (!done) { done = true; a.onended = a.onerror = null; this.speaking = false; res(ok); } };
+        a.onended = () => { this.lastEngine = 'natural'; fin(true); }; a.onerror = () => { this.lastErr = 'clip-error'; fin(false); };
+        a.src = 'data:audio/mpeg;base64,' + b64; a.playbackRate = rate || 1; try { a.preservesPitch = true; } catch (e) { }
+        this.speaking = true; const p = a.play(); if (p && p.catch) p.catch(e => { this.lastErr = 'clip-blocked:' + (e && e.name); fin(false); });
+      } catch (e) { res(false); }
+    });
+  },
+  stop() { try { Cap.tts && Cap.tts.stop(); } catch (e) { } try { speechSynthesis.cancel(); } catch (e) { } try { this.aud && this.aud.pause(); } catch (e) { } this.speaking = false; },
   pause() { try { Cap.tts ? Cap.tts.pause() : speechSynthesis.pause(); } catch (e) { } },
   resume() { try { Cap.tts ? Cap.tts.resume() : speechSynthesis.resume(); } catch (e) { } },
   advice() {
@@ -312,6 +333,16 @@ const Voice = {
   }
 };
 try { speechSynthesis.onvoiceschanged = () => Voice.pickVoice(); Voice.pickVoice(); } catch (e) { }
+document.addEventListener('click', () => Voice.unlock(), { capture: true });
+document.addEventListener('touchend', () => Voice.unlock(), { capture: true });
+const hashText = t => { let h = 5381; for (let i = 0; i < t.length; i++) h = ((h << 5) + h + t.charCodeAt(i)) | 0; return (h >>> 0).toString(36); };
+const LINE_VOICE = { n: 'Kore', q: 'Kore', e: 'Charon', c: 'Puck' };
+const clipCache = {};
+async function lessonClips(id) {
+  if (clipCache[id]) return clipCache[id];
+  if (!window.__audioStore) return {};
+  try { const r = await Promise.race([window.__audioStore.lesson(id), new Promise((_, rej) => setTimeout(() => rej('timeout'), 6000))]); clipCache[id] = r; return r; } catch (e) { return {}; }
+}
 
 /* ----- Speech in (dictation) ----- */
 function micButton(targetSel) {
@@ -853,7 +884,7 @@ VIEWS.audio = (m) => {
     const adv = Voice.advice();
     r.innerHTML = `<div class="fb ${ok ? 'ok' : 'warn'}" style="margin-top:8px">${ok ? `המערכת דיווחה שההקראה הושמעה דרך ${eng}. אם לא שמעת – בדוק שעוצמת השמע פתוחה ושהטלפון לא במצב שקט (באייפון: מתג השקט בצד).` : `ההקראה לא הושמעה${Voice.lastErr ? ' (' + esc(Voice.lastErr) + ')' : ''}.`}${adv ? '<br>' + esc(adv) : ''}</div>`;
   };
-  $$('[data-rate]', m).forEach(b => b.onclick = () => { S.settings.rate = +b.dataset.rate; save(); $$('[data-rate]', m).forEach(x => x.classList.toggle('on', x === b)); try { Cap.tts && Cap.tts.setRate(S.settings.rate); } catch (e) { } });
+  $$('[data-rate]', m).forEach(b => b.onclick = () => { S.settings.rate = +b.dataset.rate; save(); $$('[data-rate]', m).forEach(x => x.classList.toggle('on', x === b)); try { Cap.tts && Cap.tts.setRate(S.settings.rate); } catch (e) { } try { if (Voice.aud) Voice.aud.playbackRate = S.settings.rate; } catch (e) { } });
   $('#cont').onchange = e => audioSel.cont = e.target.checked;
   $('#play').onclick = () => player && player.playing ? pausePlayer() : startPlayer(L.id);
   $('#prev').onclick = () => { stopPlayer(); setSeg(L.id, Math.max(0, (S.audio[L.id]?.seg || 0) - 1)); route(); };
@@ -894,6 +925,8 @@ async function startPlayer(id) {
   let seg = S.audio[id]?.seg || 0;
   if (S.audio[id]?.doneAt && seg >= L.lines.length - 1) seg = 0;
   const vm = Voice.mode();
+  const clips = await lessonClips(id);
+  if (me.stop) return;
   while (seg < L.lines.length && !me.stop) {
     const line = L.lines[seg];
     if (line.v === 'q' && audioSel.driving) { seg++; continue; }   // בנהיגה: בלי שאלות שמחייבות תגובה
@@ -903,7 +936,9 @@ async function startPlayer(id) {
     const dl = $('#dline'); if (dl) dl.textContent = `${L.title} · קטע ${seg + 1}/${L.lines.length}`;
     setSeg(id, seg);
     let ok = false;
-    if (vm !== 'none') ok = await Voice.speak(line.t, { voice: line.v === 'e' ? 'rounded' : line.v === 'c' ? 'airy' : 'buttery' });
+    const clip = clips[seg];
+    if (clip && clip.mp3 && clip.h === hashText(line.t)) ok = await Voice.playClip(clip.mp3, S.settings.rate || 1);
+    if (!ok && !me.stop && vm !== 'none') ok = await Voice.speak(line.t, { voice: line.v === 'e' ? 'rounded' : line.v === 'c' ? 'airy' : 'buttery' });
     if (!ok && !me.stop) { await new Promise(r => setTimeout(r, Math.max(2500, line.t.length * 55 / (S.settings.rate || 1)))); }
     if (line.v === 'q' && !me.stop) {   // עצירת שליפה פעילה: זמן לענות בקול
       const nl = $('#now'); if (nl) nl.textContent = line.t + ' (' + (line.pause || 12) + ' שניות לענות בקול)';
@@ -1342,10 +1377,12 @@ VIEWS.settings = (m) => {
   <h3 style="margin-top:12px">יעד</h3><label>תאריך ועדה (אופציונלי): <input type="date" id="ed" value="${S.settings.examDate}"></label></div>
   <div class="card" style="margin-top:10px"><h3>מצב מערכת</h3><div class="kv"><span>סנכרון:</span><span>${esc(Sync.label)}</span><span>מורה ובוחן AI:</span><span>${aiAvailable() ? 'זמין' : 'לא זמין – תוכן ושאלות שמורים זמינים, הערכה עצמית במקום AI'}</span><span>הקראה:</span><span>${{ claude: 'קול Claude', browser: 'קול עברי של המכשיר', 'browser-nohe': 'קול המכשיר (לא נמצא קול עברי)', none: 'לא זמינה – טקסט בלבד' }[Voice.mode()]}</span><span>הכתבה:</span><span>${Cap.dict ? 'זמינה' : 'לא זמינה כאן – הקלדה'}</span><span>חיבור:</span><span>${navigator.onLine === false ? 'לא מקוון – התוכן זמין במלואו' : 'מקוון'}</span></div></div>
   ${window.__standalone ? aiSettingsHtml() : ''}
+  ${window.__audioStore && window.__audioStore.isAdmin() ? naturalVoiceHtml() : ''}
   <div class="card" style="margin-top:10px"><h3>פרטיות ונתונים</h3><ul class="small">${window.__standalone ? `<li>${window.__auth.isGuest() ? 'מחובר כאורח: ההתקדמות נשמרת בענן אבל קשורה לדפדפן הזה בלבד. כדי לסנכרן בין מכשירים, התנתק והתחבר עם Google. ההתקדמות שצברת כאורח לא תעבור לחשבון.' : 'מחובר כ-' + esc(window.__auth.email() || '') + '.'} ההתקדמות נשמרת באזור פרטי שרק אתה יכול לקרוא.</li><li>אם חיברת מפתח AI, הוא נשמר רק בדפדפן הזה, ותשובות פתוחות נשלחות ישירות ממנו לספק שבחרת (Google או Anthropic).</li>` : `<li>ההתקדמות נשמרת בחשבון Claude שלך, באזור פרטי שאפילו בעל הדף לא רואה, ובמכשיר.</li><li>תשובות לשאלות פתוחות נשלחות להערכה ל-Claude בלבד, ולא לשירות חיצוני אחר.</li>`}<li>הקלטות קול לא נשמרות. ההכתבה הופכת דיבור לטקסט, ותמלול נשמר בתחקיר רק אם הסכמת.</li><li>העובדות באפליקציה נכתבו מראש, עם הפניה למקור.</li></ul>
   <label class="small"><input type="checkbox" id="cs" ${S.settings.consent ? 'checked' : ''}> שמירת תמלול תשובות בתחקירים</label>
   <div class="row" style="margin-top:10px"><button class="btn" id="exp">העתק קוד גיבוי</button><button class="btn" id="imp">שחזר מקוד גיבוי</button><button class="btn" id="deltr">מחק תמלולים מתחקירים</button><button class="btn" id="delall" style="color:var(--bad)">מחק את כל הנתונים</button>${window.__standalone ? '<button class="btn" id="signout">התנתק</button>' : ''}</div><div id="confirm"></div></div>`;
   if (window.__standalone) wireAiSettings(m);
+  if (window.__audioStore && window.__audioStore.isAdmin()) wireNaturalVoice(m);
   const so = $('#signout'); if (so) so.onclick = () => window.__auth.signOut();
   $('#ed').onchange = e => { S.settings.examDate = e.target.value; save(); toast('נשמר'); };
   $('#cs').onchange = e => { S.settings.consent = e.target.checked; save(); };
@@ -1565,6 +1602,56 @@ function wireAiSettings(m) {
     catch (e) { $('#aiout').innerHTML = `<div class="fb no">הבדיקה נכשלה: ${e && e.code === 'bad_key' ? 'המפתח לא תקין או שאין לו הרשאה.' : e && e.code === 'rate_limited' ? 'הגעת למגבלת השימוש. נסה מאוחר יותר.' : 'שגיאה (' + esc(e && (e.status || e.message || e.code) || '') + '). בדוק את שם המודל או את החיבור.'}</div>`; }
   };
   const dl = $('#aidel', m); if (dl) dl.onclick = () => { window.__byok.set(null); location.reload(); };
+}
+
+/* ---------------- מנהל: יצירת קול טבעי לשיעורי האודיו ---------------- */
+let nvRun = null;
+function naturalVoiceHtml() {
+  const total = AUDIO.reduce((a, L) => a + L.lines.length, 0);
+  return `<div class="card" style="margin-top:10px;border-color:var(--accent)"><h3>🎙️ קול טבעי לשיעורי האודיו (מנהל)</h3>
+  <p class="small">יוצר הקראה טבעית בקול Gemini לכל ${total} הקטעים ב-${AUDIO.length} השיעורים, ושומר אותה בענן לכל החניכים. משתמש במפתח ה-Gemini שבהגדרות למעלה. קטעים שכבר נוצרו ולא השתנו מדולגים, כך שאפשר לעצור ולהמשיך.</p>
+  <div class="row"><button class="btn primary" id="nvgo">צור / השלם קול טבעי</button><button class="btn" id="nvstop" disabled>עצור</button><button class="btn sm" id="nvcheck">בדוק מצב</button></div>
+  <div id="nvout" class="small" style="margin-top:8px"></div></div>`;
+}
+function wireNaturalVoice(m) {
+  const out = $('#nvout', m), go = $('#nvgo', m), st = $('#nvstop', m);
+  const status = async () => {
+    out.textContent = 'בודק…'; let have = 0, total = 0;
+    for (const L of AUDIO) { const c = await lessonClips(L.id); delete clipCache[L.id]; L.lines.forEach((ln, i) => { total++; if (c[i] && c[i].h === hashText(ln.t)) have++; }); }
+    out.innerHTML = `מוכנים <b>${have}/${total}</b> קטעים.`; return { have, total };
+  };
+  $('#nvcheck', m).onclick = status;
+  st.onclick = () => { if (nvRun) nvRun.stop = true; st.disabled = true; };
+  go.onclick = async () => {
+    const c = window.__byok.get(); if (!c || !c.key || c.provider === 'claude') { out.innerHTML = '<div class="fb warn">צריך קודם לשמור מפתח Gemini בכרטיס "בוחן ומורה AI".</div>'; return; }
+    nvRun = { stop: false }; go.disabled = true; st.disabled = false;
+    let done = 0, made = 0, total = AUDIO.reduce((a, L) => a + L.lines.length, 0); const t0 = Date.now();
+    try {
+      for (const L of AUDIO) {
+        const have = await lessonClips(L.id); delete clipCache[L.id];
+        for (let i = 0; i < L.lines.length; i++) {
+          if (nvRun.stop) throw { code: 'stopped' };
+          const ln = L.lines[i], h = hashText(ln.t);
+          done++;
+          if (have[i] && have[i].h === h) continue;
+          let tries = 0;
+          for (;;) {
+            out.innerHTML = `יוצר קטע ${done}/${total} · "${esc(L.title)}" · נוצרו ${made} חדשים${tries ? ` · ניסיון ${tries + 1}` : ''}`;
+            try { const r = await window.__audioStore.generate(L.id, i, ln.t, h, LINE_VOICE[ln.v] || 'Kore'); made++; out.innerHTML += ` · מודל: ${esc(r.model)}`; break; }
+            catch (e) {
+              if (e && e.code === 'rate_limited' && tries < 6) { tries++; const w = 20 + tries * 15; for (let s = w; s > 0 && !nvRun.stop; s--) { out.innerHTML = `מגבלת קצב של Gemini – ממתין ${s} שניות… (${done}/${total})`; await new Promise(r => setTimeout(r, 1000)); } continue; }
+              throw e;
+            }
+          }
+          await new Promise(r => setTimeout(r, 2500));
+        }
+      }
+      out.innerHTML = `<div class="fb ok">הסתיים. נוצרו ${made} קטעים חדשים (${Math.round((Date.now() - t0) / 60000)} דק'). כל החניכים ישמעו עכשיו קול טבעי.</div>`;
+    } catch (e) {
+      const msg = e && e.code === 'stopped' ? 'נעצר. אפשר להמשיך מאותה נקודה.' : e && e.code === 'rate_limited' ? 'המכסה היומית של Gemini נגמרה כנראה. נסה שוב מחר – ההתקדמות נשמרה.' : e && e.code === 'bad_key' ? 'המפתח נדחה (ייתכן שלמודל הקול נדרש חיוב בחשבון Google AI Studio).' : 'שגיאה: ' + esc((e && (e.message || e.code)) || e);
+      out.innerHTML = `<div class="fb warn">${msg} נוצרו ${made} קטעים בסבב הזה.</div>`;
+    } finally { go.disabled = false; st.disabled = true; nvRun = null; }
+  };
 }
 
 /* ---------------- פרויקט הגמר – הגנה בעל פה ---------------- */
