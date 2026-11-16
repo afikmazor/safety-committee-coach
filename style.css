@@ -19,6 +19,8 @@ header.top{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--b
 header.top .wrap{display:flex;align-items:center;gap:12px;padding:10px 16px}
 .brand{font-weight:700;font-size:1.05rem;display:flex;align-items:center;gap:8px}
 .brand .dot{width:10px;height:10px;border-radius:50%;background:var(--accent)}
+.brand .logo{width:30px;height:30px;flex:none}
+.logo-big{width:96px;height:96px;margin:4px auto 8px;display:block}
 .sync{margin-inline-start:auto;font-size:.8rem;color:var(--ink2)}
 nav.side{display:none}
 nav.bottom{position:fixed;bottom:0;inset-inline:0;z-index:30;background:var(--surface);border-top:1px solid var(--line);display:flex;justify-content:space-around;padding:6px 4px calc(6px + env(safe-area-inset-bottom))}
