@@ -392,9 +392,17 @@ function route() {
 function rerenderSoft() { const r = current.route; if (['home', 'map', 'debriefs', 'plan', 'report'].includes(r)) route(); }
 function toast(msg) { let live = $('#live'); if (!live) { live = document.createElement('div'); live.id = 'live'; live.className = 'toast hide'; live.setAttribute('role', 'status'); live.setAttribute('aria-live', 'polite'); document.body.appendChild(live); } live.textContent = msg; live.classList.remove('hide'); clearTimeout(live._t); live._t = setTimeout(() => live.classList.add('hide'), 4000); }
 function srcTags(ids) { return (ids || []).map(id => `<a class="tag" href="#sources" title="${esc(SOURCES[id]?.title)}">${id}</a>`).join(''); }
+function factStatus(f) {
+  if (f.ver) return f.ver;
+  const sts = f.src.map(s => SOURCES[s]?.status);
+  return sts.includes('course') ? 'course' : sts.includes('partial') ? 'partial' : sts.every(x => x === 'verified') ? 'verified' : 'practice';
+}
 function factHtml(f) {
-  const st = f.src.map(s => SOURCES[s]?.status).includes('course') && f.kind !== 'law' ? 'course' : null;
-  return `<div class="card" style="padding:12px;margin:8px 0"><span class="tag ${f.kind === 'law' ? 'law' : f.kind === 'course' ? 'course' : ''}">${KIND_LABEL[f.kind]}</span>${srcTags(f.src)}<p style="margin-top:6px">${esc(f.text)}</p>${st ? `<span class="small muted">⚠︎ ${STATUS_LABEL.course}</span>` : ''}</div>`;
+  const st = factStatus(f);
+  const badge = st === 'verified' ? `<span class="small" style="color:var(--ok,#1b7f4b)">✓ ${STATUS_LABEL.verified} (${CHECKED.split('-').reverse().join('.')})</span>`
+    : st === 'partial' ? `<span class="small muted">◐ ${STATUS_LABEL.partial} – חלק מהפרטים מבוססים על פרסום משני או על חומר הקורס</span>`
+    : st === 'course' ? `<span class="small muted">⚠︎ ${STATUS_LABEL.course}</span>` : '';
+  return `<div class="card" style="padding:12px;margin:8px 0"><span class="tag ${f.kind === 'law' ? 'law' : f.kind === 'course' ? 'course' : ''}">${KIND_LABEL[f.kind]}</span>${srcTags(f.src)}<p style="margin-top:6px">${esc(f.text)}</p>${badge}</div>`;
 }
 
 /* ---------------- QUESTION RENDERERS ---------------- */
@@ -1281,7 +1289,9 @@ VIEWS.sources = (m) => {
   <h2>פערים וסתירות שזוהו</h2><div class="card small"><ul>
   <li>חוברת הקורס מציינת מרחקי בטיחות מקווי חשמל (3.25 מ' עד 33 ק"ו, 5 מ' מעל) ותוקף בדיקת במה (6/14 חודשים). אלה לא אומתו מול נוסח רשמי, ולכן לא נכללו כעובדות "חובה בדין".</li>
   <li>החוברת מנסחת את פטורי הסולמות (4.5 / 6 / 10 מ') בצורה לא אחידה. באפליקציה הם מוצגים לפי ציטוטי התקנות בפרסומי מוס"ל (S5, S6).</li>
-  <li>ברוב הפרקים שאינם עבודה בגובה, העובדות נלקחו מחוברת הקורס (S12) ומסומנות "טעון אימות". מספרים כמו ספי מינוי ממונה (50/100), ועדת בטיחות (25), תדירויות בדיקה (14/26/6 חודשים) וטבלת הרעש (85 dB, 3 dB) מופיעים בחוברת, אבל טרם אומתו כאן מול הנוסח המלא. תקנות הממונים תוקנו ב-2025, ותקנות הרעש עשויות להתעדכן.</li>
+  <li><b>אימות 16.11.2026:</b> עובדות החקיקה המרכזיות אומתו מול הנוסח (S26–S37): ספי מינוי ממונה (50), ועדת בטיחות (25 לפחות, 8 ישיבות בשנה), צו שיפור (לפחות 14 יום), דיווח תאונה (יותר מ-3 ימי אי כושר), מכונת הרמה ודוד קיטור (14 חודשים), קולט אוויר (26 חודשים), רעש (85 dB ל-8 שעות, 3 dB), הדרכה שנתית, תוכנית לניהול הבטיחות, ניטור וצמ"א.</li>
+  <li>תיקונים שבוצעו מול חוברת הקורס: ועדת בטיחות היא מ-25 עובדים <i>לפחות</i> (לא "יותר מ-25"). ימי השתלמות לממונה: 12 בכל 3 שנים מאז תיקון 2025 (לא 8 בשנה). בבנייה: חובת ממונה גם באתר עם 50 עובדים, והאכיפה באתרים של 50–100 נדחתה ל-15.10.2027. התוכנית לניהול הבטיחות מאושרת אחרי התייעצות עם ועדת הבטיחות, ונבחנת ומתעדכנת מדי שנה ובכל נושא חדש. ההגדרות של תאונה, מפגע וסיכון עודכנו לפי תקנות 2013. על מחלת מקצוע מודיעים לרופא הממשלתי ולמפקח האזורי.</li>
+  <li>עדיין מסומן "טעון אימות" או "אומת חלקית": בדיקה של 6 חודשים לציוד מסוים בבנייה, מקרים מסוכנים, ערכי חמצן במקום מוקף (19.5%–23%) ו-10% מה-LEL בעבודה חמה, וחלק מתפקידי הממונה לפי החוברת.</li>
   <li>נוהל הקורסים (S3) עודכן ב-2017. ב-2025 תוקנו תקנות הממונים (S8), ויש לוודא מול המכללה אם השתנה דבר בהליך הוועדה.</li></ul></div>`;
 };
 VIEWS.settings = (m) => {
