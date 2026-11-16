@@ -110,3 +110,16 @@ details summary{cursor:pointer;font-weight:500}
 
 a.btn{text-decoration:none;display:inline-flex;align-items:center}
 @media (max-width:600px){header.top .wrap>.small{display:none}.sync{font-size:.72rem;max-width:40%;text-align:left}}
+
+.timer,#tm,#think,[data-think]{font-variant-numeric:tabular-nums;unicode-bidi:isolate}
+#aikey,#aimodel{direction:ltr;unicode-bidi:isolate;text-align:left}
+@media (max-width:640px){
+  table.rtable,table.rtable tbody{display:block}
+  table.rtable tr:first-child{display:none}
+  table.rtable tr{display:block;border:1px solid var(--line);border-radius:12px;padding:8px 10px;margin:8px 0;background:var(--surface)}
+  table.rtable td{display:flex;gap:10px;justify-content:space-between;align-items:center;border:none;padding:4px 0;width:auto!important}
+  table.rtable td::before{content:attr(data-l);font-size:.8rem;color:var(--ink2);flex:none}
+  table.rtable td .lvl{flex:1;max-width:60%}
+}
+.hz:focus{outline:none}.hz:focus circle{stroke:var(--accent);stroke-width:4}
+.toast.hide{display:none}
