@@ -251,32 +251,65 @@ function mergeRemote(r) {
 
 /* ----- Speech out ----- */
 const Voice = {
-  heVoice: null,
-  pickVoice() { try { const vs = speechSynthesis.getVoices(); this.heVoice = vs.find(v => /^he|iw/i.test(v.lang)) || null; } catch (e) { } },
+  heVoice: null, lastErr: '', lastEngine: '',
+  pickVoice() {
+    try {
+      const vs = speechSynthesis.getVoices().filter(v => /^(he|iw)/i.test(v.lang));
+      const score = v => (/natural|online|neural/i.test(v.name) ? 3 : 0) + (/google|microsoft|siri|carmit/i.test(v.name) ? 1 : 0) + (v.localService ? 0 : 1);
+      this.heVoice = vs.sort((a, b) => score(b) - score(a))[0] || null;
+    } catch (e) { }
+  },
   mode() { if (Cap.tts) return 'claude'; if ('speechSynthesis' in window && this.heVoice) return 'browser'; if ('speechSynthesis' in window) return 'browser-nohe'; return 'none'; },
   speaking: false,
+  browserSpeak(text, rate) {
+    if (!('speechSynthesis' in window)) { this.lastErr = 'no-speechSynthesis'; return Promise.resolve(false); }
+    return new Promise(res => {
+      let done = false; const fin = ok => { if (!done) { done = true; clearTimeout(wd); res(ok); } };
+      // שומר: אם הדפדפן "בולע" את ההקראה בלי אירועים – לא נתקעים
+      const wd = setTimeout(() => { this.lastErr = 'browser-timeout'; fin(false); }, Math.max(8000, text.length * 150 / (rate || 1)));
+      try {
+        try { speechSynthesis.resume(); } catch (e) { }
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = 'he-IL'; if (this.heVoice) u.voice = this.heVoice; u.rate = rate;
+        let started = false;
+        u.onstart = () => { started = true; };
+        u.onend = () => { this.lastEngine = 'browser:' + (this.heVoice ? this.heVoice.name : 'default'); fin(started || true); };
+        u.onerror = (ev) => { this.lastErr = 'browser:' + (ev && ev.error || 'error'); fin(false); };
+        this.speaking = true; speechSynthesis.speak(u);
+      } catch (e) { this.lastErr = 'browser-exception'; fin(false); }
+    }).finally(() => { this.speaking = false; });
+  },
   async speak(text, opts = {}) {
     const rate = opts.rate || S.settings.rate || 1;
+    this.lastErr = '';
     if (Cap.tts) {
-      try { this.speaking = true; await Cap.tts.speak(text, { voice: opts.voice || 'buttery', rate: Math.min(1.5, Math.max(0.7, rate)), language: 'he' }); return true; }
-      catch (e) { if (e && (e.code === 'not_granted')) Cap.tts = null; else return false; }
-      finally { this.speaking = false; }
+      const o = { voice: opts.voice || 'buttery', rate: Math.min(1.5, Math.max(0.7, rate)) };
+      for (const withLang of [true, false]) {
+        try { this.speaking = true; await Cap.tts.speak(text, withLang ? Object.assign({ language: 'he' }, o) : o); this.lastEngine = 'claude'; return true; }
+        catch (e) {
+          const code = e && e.code || 'error'; this.lastErr = 'claude:' + code;
+          if (code === 'not_granted') { Cap.tts = null; break; }
+          if (code === 'busy' || code === 'rate_limited') { await new Promise(r => setTimeout(r, 1200)); continue; }
+          if (code === 'viewer_stopped' || code === 'stopped') return false;
+          if (withLang) continue;   // ננסה שוב בלי פרמטר שפה
+        }
+        finally { this.speaking = false; }
+      }
+      // קול Claude נכשל – עוברים לקול הדפדפן במקום שתיקה
     }
-    if ('speechSynthesis' in window) {
-      return new Promise(res => {
-        try {
-          const u = new SpeechSynthesisUtterance(text);
-          u.lang = 'he-IL'; if (this.heVoice) u.voice = this.heVoice; u.rate = rate;
-          u.onend = () => res(true); u.onerror = () => res(false);
-          this.speaking = true; speechSynthesis.speak(u);
-        } catch (e) { res(false); }
-      }).finally(() => { this.speaking = false; });
-    }
-    return false;
+    return this.browserSpeak(text, rate);
   },
   stop() { try { Cap.tts && Cap.tts.stop(); } catch (e) { } try { speechSynthesis.cancel(); } catch (e) { } this.speaking = false; },
   pause() { try { Cap.tts ? Cap.tts.pause() : speechSynthesis.pause(); } catch (e) { } },
-  resume() { try { Cap.tts ? Cap.tts.resume() : speechSynthesis.resume(); } catch (e) { } }
+  resume() { try { Cap.tts ? Cap.tts.resume() : speechSynthesis.resume(); } catch (e) { } },
+  advice() {
+    const ua = navigator.userAgent || '';
+    const m = this.mode();
+    if (m === 'claude') return '';
+    if (m === 'none') return 'בחלון הזה אין מנוע הקראה. באפליקציית Claude לטלפון ההקראה לא זמינה לדפים כאלה. פתח את האתר safety-committee-coach.web.app בדפדפן (Chrome באנדרואיד, Safari באייפון) או במחשב.';
+    if (m === 'browser-nohe') return /Android/i.test(ua) ? 'לא נמצא קול עברי במכשיר. התקן: הגדרות ← מערכת ← שפות וקלט ← פלט טקסט לדיבור ← מנוע Google ← התקן נתוני קול ← עברית.' : /iPhone|iPad|Mac/i.test(ua) ? 'לא נמצא קול עברי. בהגדרות ← נגישות ← תוכן מוקרא ← קולות ← עברית, הורד קול (למשל Carmit).' : 'לא נמצא קול עברי בדפדפן. בדפדפן Edge יש קולות עבריים טבעיים (Hila / Avri). ב-Windows אפשר גם להוסיף "עברית" בהגדרות ← שפה ← דיבור.';
+    return '';
+  }
 };
 try { speechSynthesis.onvoiceschanged = () => Voice.pickVoice(); Voice.pickVoice(); } catch (e) { }
 
@@ -797,6 +830,7 @@ VIEWS.audio = (m) => {
   const vm = Voice.mode();
   m.innerHTML = `<h1>אני בדרך – אודיו</h1>
   <p class="muted small">השיעורים נכתבו לשמיעה. ההתקדמות נשמרת לפי קטעים. ${vm === 'none' ? 'במכשיר הזה אין הקראה קולית, אז הטקסט יוצג לקריאה.' : vm === 'browser-nohe' ? 'לא נמצא קול עברי במכשיר, וייתכן שההקראה לא תהיה ברורה.' : ''}</p>
+  <div class="card small" id="sndbox" style="margin:6px 0"><div class="row" style="justify-content:space-between;align-items:center"><span>🔊 לא שומע? <b>בדיקת קול</b> תאתר את הבעיה.</span><button class="btn sm" id="sndtest">בדיקת קול</button></div><div id="sndres"></div></div>
   <div class="row topicbar" style="margin:6px 0">${topicChips()}</div>
   <div class="grid g3">${activeAudio().map(a => { const s = S.audio[a.id]; return `<button class="card" style="text-align:right;cursor:pointer;${a.id === L.id ? 'border-color:var(--accent)' : ''}" data-l="${a.id}"><span class="tag">${esc(TOPICS[audioTopic(a)].short)}</span> <span class="tag">${DEPTH_NAME[a.depth]}</span> <span class="small muted">${a.mins} דק'</span><h3 style="margin-top:6px">${esc(a.title)}</h3><span class="small muted">${s?.doneAt ? '✔ נשמע (חשיפה)' : s?.seg ? `עצרת בקטע ${s.seg + 1}/${a.lines.length}` : 'טרם נשמע'}</span></button>`; }).join('')}</div>
   <div class="card player" style="margin-top:14px">
@@ -811,6 +845,14 @@ VIEWS.audio = (m) => {
   <div id="after"></div>`;
   $$('[data-l]', m).forEach(b => b.onclick = () => { stopPlayer(); audioSel.lesson = b.dataset.l; route(); });
   $$('[data-topic]', m).forEach(b => b.onclick = () => { stopPlayer(); S.settings.topic = b.dataset.topic; audioSel.lesson = null; save(); route(); });
+  $('#sndtest').onclick = async () => {
+    const r = $('#sndres'); r.innerHTML = '<span class="muted">משמיע: "בדיקת קול. אם אתה שומע אותי, הכול תקין."…</span>';
+    Voice.pickVoice();
+    const ok = await Voice.speak('בדיקת קול. אם אתה שומע אותי, הכול תקין.');
+    const eng = Voice.lastEngine === 'claude' ? 'קול Claude' : Voice.lastEngine ? 'קול הדפדפן (' + esc(Voice.lastEngine.replace('browser:', '')) + ')' : '—';
+    const adv = Voice.advice();
+    r.innerHTML = `<div class="fb ${ok ? 'ok' : 'warn'}" style="margin-top:8px">${ok ? `המערכת דיווחה שההקראה הושמעה דרך ${eng}. אם לא שמעת – בדוק שעוצמת השמע פתוחה ושהטלפון לא במצב שקט (באייפון: מתג השקט בצד).` : `ההקראה לא הושמעה${Voice.lastErr ? ' (' + esc(Voice.lastErr) + ')' : ''}.`}${adv ? '<br>' + esc(adv) : ''}</div>`;
+  };
   $$('[data-rate]', m).forEach(b => b.onclick = () => { S.settings.rate = +b.dataset.rate; save(); $$('[data-rate]', m).forEach(x => x.classList.toggle('on', x === b)); try { Cap.tts && Cap.tts.setRate(S.settings.rate); } catch (e) { } });
   $('#cont').onchange = e => audioSel.cont = e.target.checked;
   $('#play').onclick = () => player && player.playing ? pausePlayer() : startPlayer(L.id);
