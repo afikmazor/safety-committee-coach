@@ -123,3 +123,8 @@ a.btn{text-decoration:none;display:inline-flex;align-items:center}
 }
 .hz:focus{outline:none}.hz:focus circle{stroke:var(--accent);stroke-width:4}
 .toast.hide{display:none}
+/* בורר נושאים */
+.topicbar { gap: 6px; flex-wrap: wrap; }
+.chip.sm { padding: 6px 12px; font-size: .88rem; min-height: 40px; }
+tr.tgroup th { background: var(--soft, rgba(15,110,106,.08)); text-align: right; padding: 8px; font-size: .95rem; }
+@media (max-width: 640px) { .topicbar { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; } .topicbar .chip { flex: 0 0 auto; } tr.tgroup { display: block; } tr.tgroup th { display: block; } }

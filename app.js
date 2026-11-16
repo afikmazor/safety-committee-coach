@@ -1,6 +1,6 @@
 'use strict';
 /* =========================================================
-   הכנה לוועדת הסמכה – ממוני בטיחות | מסלול אנכי: עבודה בגובה
+   בב״ח – הכנה לוועדת הסמכה לממוני בטיחות | כל נושאי הקורס
    ========================================================= */
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => Array.from(el.querySelectorAll(s));
@@ -11,11 +11,20 @@ const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { c
 const QMAP = Object.fromEntries(Q.map(q => [q.id, q]));
 const FMAP = Object.fromEntries(FACTS.map(f => [f.id, f]));
 const DEPTH_NAME = { 1: 'בסיסי', 2: 'יישומי', 3: 'ועדה' };
+/* נושא פעיל: 'all' או אות נושא (A–K) */
+const curTopic = () => (typeof S !== 'undefined' && S.settings && S.settings.topic) || 'all';
+const inCur = c => curTopic() === 'all' || compTopic(c) === curTopic();
+const topicName = t => t === 'all' ? 'כל נושאי הקורס' : (TOPICS[t]?.name || t);
+const topicIdx = c => TOPIC_ORDER.indexOf(compTopic(c));
+const activeComps = () => Object.keys(COMPS).filter(inCur).sort((a, b) => topicIdx(a) - topicIdx(b));
+const activeQ = () => Q.filter(q => inCur(q.comp));
+const audioTopic = a => a.topic || compTopic(a.comps[0]);
+const activeAudio = () => { const l = AUDIO.filter(a => curTopic() === 'all' || audioTopic(a) === curTopic()); return l.length ? l : AUDIO; };
 const MODE_NAME = { phone: 'כמה דקות בטלפון', audio: 'אודיו בדרכים', desk: 'מחשב' };
 
 /* ---------------- STATE ---------------- */
 const DEF = () => ({ v: 1, updatedAt: 0, events: [], srs: {}, audio: {}, debriefs: [], drafts: {}, profile: null, diag: null,
-  settings: { examDate: '', depth: 'auto', rate: 1, consent: false, pressure: 'normal' } });
+  settings: { examDate: '', depth: 'auto', rate: 1, consent: false, pressure: 'normal', topic: 'all' } });
 let S = DEF();
 let LKEY = 'wah_state_v1';   // נקבע לפי מזהה המשתמש אחרי ההתחברות – כדי שמשתמשים במכשיר משותף לא יתערבבו
 function loadLocal() { try { const j = JSON.parse(localStorage.getItem(LKEY)); if (j && j.v) return Object.assign(DEF(), j, { settings: Object.assign(DEF().settings, j.settings || {}) }); } catch (e) { } return DEF(); }
@@ -97,7 +106,7 @@ const isDue = qid => S.srs[qid] && S.srs[qid].due <= Date.now();
 
 /* ---------------- ADAPTIVE RECOMMENDER ---------------- */
 function weakComps() {
-  return Object.keys(COMPS).map(c => ({ c, m: mastery(c) })).sort((a, b) => a.m.score - b.m.score || a.m.evidence - b.m.evidence);
+  return activeComps().map(c => ({ c, m: mastery(c) })).sort((a, b) => a.m.score - b.m.score || a.m.evidence - b.m.evidence || topicIdx(a.c) - topicIdx(b.c));
 }
 function autoDepth(comp) {
   const m = mastery(comp);
@@ -111,7 +120,7 @@ function autoDepth(comp) {
 function audioNotPracticed() {
   // שיעורי אודיו שנשמעו, שהיעדים שלהם עדיין בלי תרגול אחרי ההאזנה
   const out = [];
-  for (const a of AUDIO) {
+  for (const a of activeAudio()) {
     const st = S.audio[a.id]; if (!st || !st.doneAt) continue;
     const practiced = a.comps.every(c => S.events.some(e => e.comp === c && e.kind !== 'exposure' && e.t > st.doneAt));
     if (!practiced) out.push(a);
@@ -120,7 +129,7 @@ function audioNotPracticed() {
 }
 function recentFailures() {
   const out = [];
-  for (const c of Object.keys(COMPS)) {
+  for (const c of activeComps()) {
     const ev = S.events.filter(e => e.comp === c && e.kind !== 'exposure');
     const lastFail = [...ev].reverse().find(e => e.ok === false || (e.score != null && e.score < 0.6));
     if (!lastFail || Date.now() - lastFail.t > 5 * DAY) continue;
@@ -131,12 +140,13 @@ function recentFailures() {
   return out.sort((a, b) => b.fails - a.fails);
 }
 function recommend(mode = 'phone', minutes = 5) {
-  const dueQs = Q.filter(q => isDue(q.id));
+  const dueQs = activeQ().filter(q => isDue(q.id));
   if (mode === 'audio') {
-    const inProg = AUDIO.find(a => S.audio[a.id] && !S.audio[a.id].doneAt && S.audio[a.id].seg > 0);
+    const AL = activeAudio();
+    const inProg = AL.find(a => S.audio[a.id] && !S.audio[a.id].doneAt && S.audio[a.id].seg > 0);
     if (inProg) return { mode, lesson: inProg.id, depth: inProg.depth, reason: `בחרתי להמשיך את "${inProg.title}" מהמקום שבו עצרת.` };
     const w = weakComps()[0].c;
-    const next = AUDIO.find(a => !S.audio[a.id]?.doneAt && a.depth === autoDepth(w)) || AUDIO.find(a => !S.audio[a.id]?.doneAt) || AUDIO[2];
+    const next = AL.find(a => !S.audio[a.id]?.doneAt && a.comps.includes(w)) || AL.find(a => !S.audio[a.id]?.doneAt && audioTopic(a) === compTopic(w)) || AL.find(a => !S.audio[a.id]?.doneAt) || AL[AL.length - 1];
     return { mode, lesson: next.id, depth: next.depth, reason: `בחרתי את השיעור הזה כי הוא מכסה את "${COMPS[w]}", שבו מדד השליטה שלך הכי נמוך כרגע.` };
   }
   const heard = audioNotPracticed();
@@ -553,6 +563,14 @@ function selfAssess(out, q, ans, helped, finish) {
 }
 function renderQuestion(el, q, ctx) { (q.type === 'open' ? renderOpen : q.type === 'tf' ? renderTF : renderMCQ)(el, q, ctx); }
 
+/* ---------------- TOPIC PICKER ---------------- */
+function topicChips() {
+  return [['all', 'הכול'], ...TOPIC_ORDER.map(t => [t, TOPICS[t].short])].map(([k, n]) => `<button class="chip sm ${curTopic() === k ? 'on' : ''}" data-topic="${k}" title="${esc(topicName(k))}" aria-pressed="${curTopic() === k}">${esc(n)}</button>`).join('');
+}
+function wireTopicChips(m) {
+  $$('[data-topic]', m).forEach(b => b.onclick = () => { S.settings.topic = b.dataset.topic; save(); route(); });
+}
+
 /* ---------------- VIEW: HOME ---------------- */
 const VIEWS = {};
 let homeSel = { minutes: 5, depth: S.settings.depth || 'auto', deskDepth: 'auto' };
@@ -560,15 +578,16 @@ VIEWS.home = (m) => {
   const rec = recommend('phone', homeSel.minutes);
   const rd = readiness();
   const heard = audioNotPracticed();
-  const resumeA = AUDIO.find(a => S.audio[a.id] && !S.audio[a.id].doneAt && S.audio[a.id].seg > 0);
+  const resumeA = activeAudio().find(a => S.audio[a.id] && !S.audio[a.id].doneAt && S.audio[a.id].seg > 0);
   const daysTo = S.settings.examDate ? Math.ceil((new Date(S.settings.examDate) - Date.now()) / DAY) : null;
   const ses = S.session;
   const sesLabel = ses ? { quick: `סבב ${ses.plan?.minutes || ''} דקות (${(ses.plan?.i || 0) + 1}/${ses.plan?.ids?.length || ''})`, scenario: 'התרחיש במחסן', lesson: `השיעור המודרך (יחידה ${(ses.idx || 0) + 1})`, sim: 'סימולציית הוועדה' }[ses.kind] : null;
   m.innerHTML = `
   <h1>שלום ${esc(S.profile?.nick || '')}, מה מתאים לך עכשיו?</h1>
-  <p class="muted small">נושא פעיל: <b>עבודה בגובה</b> · ${daysTo != null ? (daysTo >= 0 ? `${daysTo} ימים לוועדה · ` : '') : '<a href="#settings">הגדר תאריך ועדה</a> · '}מדד ראיות <a href="#report"><b>${rd.score}/100</b></a> (כיסוי ${rd.coverage})</p>
+  <div class="row topicbar" role="group" aria-label="נושא פעיל" style="margin:6px 0 4px">${topicChips()}</div>
+  <p class="muted small">נושא פעיל: <b>${esc(topicName(curTopic()))}</b> · ${daysTo != null ? (daysTo >= 0 ? `${daysTo} ימים לוועדה · ` : '') : '<a href="#settings">הגדר תאריך ועדה</a> · '}מדד ראיות <a href="#report"><b>${rd.score}/100</b></a> (כיסוי ${rd.coverage})</p>
   ${sesLabel ? `<div class="card" style="margin-bottom:12px"><div class="row" style="justify-content:space-between"><span>⏸ עצרת באמצע: <b>${sesLabel}</b></span><span class="row"><button class="btn primary sm" id="resume">המשך מאיפה שעצרת</button><button class="btn ghost sm" id="dropses">התחל מחדש</button></span></div></div>` : ''}
-  ${!S.diag ? `<div class="fb info small">אבחון קצר (3 דקות) יקבע את נקודת הפתיחה שלך. <a href="#diag">התחל אבחון</a></div>` : ''}
+  ${!S.diag ? `<div class="fb info small">אבחון קצר (5 דקות, שאלה מכל פרק) יקבע את נקודת הפתיחה שלך. <a href="#diag">התחל אבחון</a></div>` : ''}
   <div class="card" style="border-color:var(--accent)">
     <div class="small muted">ההמלצה של בב״ח</div>
     <h3 style="margin-top:4px">${rec.comps ? esc(rec.comps.map(c => COMPS[c]).join(' · ')) : ''} · רמה ${DEPTH_NAME[rec.depth]}</h3>
@@ -590,9 +609,10 @@ VIEWS.home = (m) => {
       <button class="btn primary" id="goDesk">פתח סביבת לימוד</button></div>
   </div>
   ${heard.length ? `<div class="card" style="margin-top:12px"><b>מהדרך:</b> שמעת את ${heard.map(a => `"${esc(a.title)}"`).join(', ')} ועוד לא תרגלת את החומר. <button class="btn sm" id="goHeard">תרגל עכשיו</button></div>` : ''}
-  <details id="allpaths" style="margin-top:16px"><summary><b>כל 9 המסלולים – עבודה בגובה</b></summary>${matrixHtml()}</details>
-  <p class="small muted" style="margin-top:12px">מדד הראיות מחושב רק מביצועים, ושמיעה או קריאה לא מעלות אותו. בלי תרגול שאלות ועדה הוא נעצר. הוא מכסה נושא אחד מתוך 11 בתוכנית ואינו מנבא הצלחה בוועדה. <a href="#map">איך מחושב</a></p>`;
+  <details id="allpaths" style="margin-top:16px"><summary><b>כל 9 המסלולים – ${esc(topicName(curTopic()))}</b></summary>${matrixHtml()}</details>
+  <p class="small muted" style="margin-top:12px">מדד הראיות מחושב רק מביצועים, ושמיעה או קריאה לא מעלות אותו. בלי תרגול שאלות ועדה הוא נעצר. הוא מכסה את כל 11 פרקי הקורס, מבוסס על שאלות מקוריות, ואינו מנבא הצלחה בוועדה. <a href="#map">איך מחושב</a></p>`;
   if (window.matchMedia && matchMedia('(min-width: 900px)').matches) $('#allpaths').open = true;
+  wireTopicChips(m);
   const rs = $('#resume'); if (rs) rs.onclick = () => resumeSession();
   const ds = $('#dropses'); if (ds) ds.onclick = () => { S.session = null; quickPlan = null; scen = null; sim = null; saveLocal(); route(); };
   $$('[data-min]', m).forEach(b => b.onclick = () => { homeSel.minutes = +b.dataset.min; route(); });
@@ -602,16 +622,20 @@ VIEWS.home = (m) => {
   $('#goQuick').onclick = () => { const r2 = recommend('phone'); startQuick(homeSel.minutes, homeSel.depth === 'auto' ? r2.depth : homeSel.depth, r2); };
   $('#goAudio').onclick = () => { audioSel.lesson = resumeA ? resumeA.id : recommend('audio').lesson; audioSel.autoplay = true; go('audio'); };
   $('#goDrive').onclick = () => { audioSel.lesson = resumeA ? resumeA.id : recommend('audio').lesson; audioSel.drive = true; go('audio'); };
-  $('#goDesk').onclick = () => { const d = homeSel.deskDepth === 'auto' ? autoDepth(weakComps()[0].c) : homeSel.deskDepth; go(d === 1 ? 'lesson' : d === 2 ? 'scenario' : 'sim'); };
+  $('#goDesk').onclick = () => { const d = homeSel.deskDepth === 'auto' ? autoDepth(weakComps()[0].c) : homeSel.deskDepth; const wc = weakComps()[0].c; if (d === 2 && compTopic(wc) !== 'G') { startQuick(10, 2, { comps: activeComps().filter(c => compTopic(c) === compTopic(wc)), reason: `תרחישי החלטה בפרק "${TOPICS[compTopic(wc)].name}", שבו היעד החלש ביותר שלך.` }); return; } if (d === 1) lessonTopic = null; go(d === 1 ? 'lesson' : d === 2 ? 'scenario' : 'sim'); };
   const gh = $('#goHeard'); if (gh) gh.onclick = () => startQuick(5, heard[0].depth, recommend('phone'));
   wireMatrix(m);
 };
 function matrixHtml() {
   const cell = (mode, d, title, sub) => `<span class="cell" data-mx="${mode}:${d}" role="button" tabindex="0">${title}<b>${sub}</b></span>`;
+  const AL = activeAudio();
+  const aud = d => AL.find(a => a.depth === d) || AL[Math.min(d - 1, AL.length - 1)];
+  const acell = d => { const a = aud(d); return cell('audio', a.id, esc(a.title), `${a.mins} דק'`); };
+  const gScen = curTopic() === 'all' || curTopic() === 'G';
   return `<div class="card" style="overflow-x:auto"><table class="matrix"><tr><th></th><th>בסיסי</th><th>יישומי</th><th>ועדה</th></tr>
   <tr><th>כמה דקות בטלפון</th><td>${cell('phone', 1, 'מושג ושאלות קצרות', '2–15 דק\'')}</td><td>${cell('phone', 2, 'מקרה קצר והחלטה', 'כולל נימוק')}</td><td>${cell('phone', 3, 'שאלת ועדה קצרה', 'עם משוב')}</td></tr>
-  <tr><th>אודיו</th><td>${cell('audio', 'a1', 'שיעור יסוד', '6 דק\'')}</td><td>${cell('audio', 'a2', 'סיפור מקרה וניתוח', '7 דק\'')}</td><td>${cell('audio', 'a3', 'דיון ועדה ותשובה לדוגמה', '8 דק\'')}</td></tr>
-  <tr><th>מחשב</th><td>${cell('desk', 'lesson', 'שיעור מודרך', 'עם בדיקות הבנה')}</td><td>${cell('desk', 'scenario', 'תרחיש אינטראקטיבי', 'מפגעים, החלטות, נוהל')}</td><td>${cell('desk', 'sim', 'סימולציית ועדה ותחקיר', 'בעל פה')}</td></tr></table></div>`;
+  <tr><th>אודיו</th><td>${acell(1)}</td><td>${acell(2)}</td><td>${acell(3)}</td></tr>
+  <tr><th>מחשב</th><td>${cell('desk', 'lesson', 'שיעור מודרך', 'עם בדיקות הבנה')}</td><td>${gScen ? cell('desk', 'scenario', 'תרחיש אינטראקטיבי', 'מפגעים, החלטות, נוהל') : cell('phone', 2, 'תרחישי החלטה בנושא', 'סבב יישומי')}</td><td>${cell('desk', 'sim', 'סימולציית ועדה ותחקיר', 'בעל פה')}</td></tr></table></div>`;
 }
 function wireMatrix(m) {
   $$('[data-mx]', m).forEach(c => {
@@ -625,7 +649,9 @@ let quickPlan = null;
 function buildQuick(minutes, depth, rec) {
   const per = { 1: { 2: 4, 5: 8, 10: 14, 15: 20 }, 2: { 2: 1, 5: 3, 10: 5, 15: 7 }, 3: { 2: 1, 5: 1, 10: 2, 15: 3 } }[depth][minutes] || 4;
   const target = new Set(rec?.comps || []);
-  const pool = Q.filter(q => depth === 1 ? (q.type === 'mcq' || q.type === 'tf') : depth === 2 ? q.type === 'scenario' : q.type === 'open');
+  const typeOk = q => depth === 1 ? (q.type === 'mcq' || q.type === 'tf') : depth === 2 ? q.type === 'scenario' : q.type === 'open';
+  let pool = Q.filter(q => typeOk(q) && (target.size ? target.has(q.comp) || inCur(q.comp) : inCur(q.comp)));
+  if (pool.length < 2) pool = Q.filter(typeOk);
   const scoreQ = q => {
     let s = Math.random();
     if (isDue(q.id)) s += 5;
@@ -642,7 +668,8 @@ function buildQuick(minutes, depth, rec) {
   while (rest.length) { const i = rest.findIndex(q => !inter.length || q.comp !== inter[inter.length - 1].comp); inter.push(rest.splice(i < 0 ? 0 : i, 1)[0]); }
   const items = [];
   if (depth === 1) { const c = inter[0]?.comp || [...target][0] || 'C1'; const f = FACTS.find(f => f.comp === c); if (f) items.push({ kind: 'fact', f }); }
-  if (depth === 2 && minutes >= 5) items.push({ kind: 'hazard' });
+  const gOk = target.size ? [...target].some(c => compTopic(c) === 'G') : inCur('C1');
+  if (depth === 2 && minutes >= 5 && gOk) items.push({ kind: 'hazard' });
   inter.forEach(q => items.push({ kind: 'q', q }));
   return { minutes, depth, items, i: 0, results: [], started: Date.now(), reason: rec?.reason || '' };
 }
@@ -660,7 +687,7 @@ function resumeSession() {
       items: p.ids.map(x => x.k === 'q' ? { kind: 'q', q: QMAP[x.id] } : x.k === 'fact' ? { kind: 'fact', f: FMAP[x.id] } : { kind: x.k }).filter(it => it.kind !== 'q' || it.q) };
     go('quick');
   } else if (s.kind === 'scenario') { scen = s.scen; go('scenario'); }
-  else if (s.kind === 'lesson') { lessonIdx = s.idx || 0; go('lesson'); }
+  else if (s.kind === 'lesson') { lessonIdx = s.idx || 0; lessonTopic = s.topic || 'G'; go('lesson'); }
   else if (s.kind === 'sim') { sim = s.sim; go('sim'); }
 }
 VIEWS.quick = (m) => {
@@ -762,7 +789,8 @@ VIEWS.audio = (m) => {
   const vm = Voice.mode();
   m.innerHTML = `<h1>אני בדרך – אודיו</h1>
   <p class="muted small">השיעורים נכתבו לשמיעה. ההתקדמות נשמרת לפי קטעים. ${vm === 'none' ? 'במכשיר הזה אין הקראה קולית, אז הטקסט יוצג לקריאה.' : vm === 'browser-nohe' ? 'לא נמצא קול עברי במכשיר, וייתכן שההקראה לא תהיה ברורה.' : ''}</p>
-  <div class="grid g3">${AUDIO.map(a => { const s = S.audio[a.id]; return `<button class="card" style="text-align:right;cursor:pointer;${a.id === L.id ? 'border-color:var(--accent)' : ''}" data-l="${a.id}"><span class="tag">${DEPTH_NAME[a.depth]}</span> <span class="small muted">${a.mins} דק'</span><h3 style="margin-top:6px">${esc(a.title)}</h3><span class="small muted">${s?.doneAt ? '✔ נשמע (חשיפה)' : s?.seg ? `עצרת בקטע ${s.seg + 1}/${a.lines.length}` : 'טרם נשמע'}</span></button>`; }).join('')}</div>
+  <div class="row topicbar" style="margin:6px 0">${topicChips()}</div>
+  <div class="grid g3">${activeAudio().map(a => { const s = S.audio[a.id]; return `<button class="card" style="text-align:right;cursor:pointer;${a.id === L.id ? 'border-color:var(--accent)' : ''}" data-l="${a.id}"><span class="tag">${esc(TOPICS[audioTopic(a)].short)}</span> <span class="tag">${DEPTH_NAME[a.depth]}</span> <span class="small muted">${a.mins} דק'</span><h3 style="margin-top:6px">${esc(a.title)}</h3><span class="small muted">${s?.doneAt ? '✔ נשמע (חשיפה)' : s?.seg ? `עצרת בקטע ${s.seg + 1}/${a.lines.length}` : 'טרם נשמע'}</span></button>`; }).join('')}</div>
   <div class="card player" style="margin-top:14px">
     <div class="row" style="justify-content:space-between"><b>${esc(L.title)}</b><span class="small muted" id="pos">קטע ${Math.min(st.seg + 1, L.lines.length)}/${L.lines.length}</span></div>
     <div class="bar"><i id="pbar" style="width:${(st.seg / L.lines.length) * 100}%"></i></div>
@@ -774,6 +802,7 @@ VIEWS.audio = (m) => {
   </div>
   <div id="after"></div>`;
   $$('[data-l]', m).forEach(b => b.onclick = () => { stopPlayer(); audioSel.lesson = b.dataset.l; route(); });
+  $$('[data-topic]', m).forEach(b => b.onclick = () => { stopPlayer(); S.settings.topic = b.dataset.topic; audioSel.lesson = null; save(); route(); });
   $$('[data-rate]', m).forEach(b => b.onclick = () => { S.settings.rate = +b.dataset.rate; save(); $$('[data-rate]', m).forEach(x => x.classList.toggle('on', x === b)); try { Cap.tts && Cap.tts.setRate(S.settings.rate); } catch (e) { } });
   $('#cont').onchange = e => audioSel.cont = e.target.checked;
   $('#play').onclick = () => player && player.playing ? pausePlayer() : startPlayer(L.id);
@@ -841,7 +870,7 @@ async function startPlayer(id) {
   save();
   me.playing = false; updatePlayUI();
   if (audioSel.cont !== false) {
-    const nxt = AUDIO.find(a => !S.audio[a.id]?.doneAt);
+    const nxt = activeAudio().find(a => !S.audio[a.id]?.doneAt) || AUDIO.find(a => !S.audio[a.id]?.doneAt);
     if (nxt) { audioSel.lesson = nxt.id; if (audioSel.driving) { startPlayer(nxt.id); return; } route(); startPlayer(nxt.id); return; }
   }
   if (!audioSel.driving && current.route === 'audio') route();
@@ -884,7 +913,7 @@ VIEWS.desk = (m) => {
   wireTutor(m);
 };
 function tutorHtml() {
-  return `<div class="card"><p class="small muted">שאל כל שאלה על עבודה בגובה. המורה עונה מתוך המקורות באפליקציה, מציין מקור ואומר כשהוא לא בטוח.</p>
+  return `<div class="card"><p class="small muted">שאל כל שאלה על ${esc(topicName(curTopic()))}. המורה עונה מתוך המקורות באפליקציה, מציין מקור ואומר כשהוא לא בטוח.</p>
   <div id="tlog"></div><textarea id="tq" style="min-height:70px" placeholder="למשל: מה ההבדל בין 6 מ' ל-10 מ' בסולם קבוע?"></textarea>
   <div class="row" style="margin-top:6px">${micButton('#tq')}<button class="btn primary" id="task">שאל</button><button class="btn sm ghost" id="talt">הסבר בדרך אחרת</button></div>
   ${aiAvailable() ? '' : '<p class="small muted">שירות ה-AI לא זמין כרגע. אפשר לחפש בספריית המקורות.</p>'}</div>`;
@@ -896,10 +925,10 @@ function wireTutor(m) {
     if (!text) return;
     const log = $('#tlog', m);
     log.insertAdjacentHTML('beforeend', `<div class="bubble me" style="margin:6px 0">${esc(text)}</div>`);
-    if (!aiAvailable()) { log.insertAdjacentHTML('beforeend', `<div class="bubble" style="margin:6px 0">המורה לא זמין כרגע. הנה העובדות הרלוונטיות מהמאגר:${FACTS.filter(f => text.split(/\s+/).some(w => w.length > 2 && f.text.includes(w))).slice(0, 3).map(factHtml).join('') || ' לא נמצאה התאמה. נסה את ספריית המקורות.'}</div>`); return; }
+    if (!aiAvailable()) { log.insertAdjacentHTML('beforeend', `<div class="bubble" style="margin:6px 0">המורה לא זמין כרגע. הנה העובדות הרלוונטיות מהמאגר:${FACTS.filter(f => inCur(f.comp)).filter(f => text.split(/\s+/).some(w => w.length > 2 && f.text.includes(w))).slice(0, 3).map(factHtml).join('') || ' לא נמצאה התאמה. נסה את ספריית המקורות.'}</div>`); return; }
     const box = document.createElement('div'); box.className = 'bubble'; box.style.margin = '6px 0'; box.textContent = '…'; log.appendChild(box);
     tutorHist.push({ role: 'user', content: text });
-    const sys = `אתה מורה פרטי מקצועי לממוני בטיחות בישראל, בנושא עבודה בגובה. ענה בעברית, קצר וברור (עד 150 מילים), והתאם להכנה לוועדת הסמכה. הסתמך על העובדות שלהלן וציין את מזהה המקור בסוגריים (למשל [S1]). הבחן בין חובה בדין, חומר הקורס והסבר לימודי. אם אינך בטוח או שהמידע לא נמצא, אמור זאת במפורש והפנה לנוסח הרשמי. אל תמציא סעיפים.\nעובדות:\n${FACTS.map(f => `${f.id} [${KIND_LABEL[f.kind]}; מקור ${f.src.join(',')}]: ${f.text}`).join('\n')}`;
+    const sys = `אתה מורה פרטי מקצועי לממוני בטיחות בישראל, בנושא ${topicName(curTopic())}. ענה בעברית, קצר וברור (עד 150 מילים), והתאם להכנה לוועדת הסמכה. הסתמך על העובדות שלהלן וציין את מזהה המקור בסוגריים (למשל [S1]). הבחן בין חובה בדין, חומר הקורס והסבר לימודי. אם אינך בטוח או שהמידע לא נמצא, אמור זאת במפורש והפנה לנוסח הרשמי. אל תמציא סעיפים.\nעובדות:\n${FACTS.filter(f => inCur(f.comp)).map(f => `${f.id} [${KIND_LABEL[f.kind]}; מקור ${f.src.join(',')}]: ${f.text}`).join('\n')}`;
     try {
       const msgs = [{ role: 'user', content: sys + '\n\nשאלה: ' + tutorHist[0].content }].concat(tutorHist.slice(1));
       const r = await Cap.sample(msgs, { cache: false, onText: ({ text }) => { box.textContent = text; } });
@@ -915,9 +944,18 @@ function wireTutor(m) {
 /* ---------------- VIEW: GUIDED LESSON (desk basic) ---------------- */
 let lessonIdx = 0;
 /* שיעור Test-first: כל יחידה נפתחת בשאלה. מי שעונה נכון יכול לדלג; מי שטועה – מקבל את ההסבר הממוקד. */
+let lessonTopic = null;
+function lessonTopicNow() {
+  if (lessonTopic && TOPIC_LESSONS[lessonTopic]) return lessonTopic;
+  const t = curTopic() !== 'all' ? curTopic() : compTopic(weakComps()[0].c);
+  return TOPIC_LESSONS[t] ? t : 'G';
+}
 VIEWS.lesson = (m) => {
+  const LT = lessonTopicNow(); lessonTopic = LT;
+  const LESSON = TOPIC_LESSONS[LT];
+  if (lessonIdx >= LESSON.length) lessonIdx = 0;
   const L = LESSON[lessonIdx];
-  S.session = { kind: 'lesson', idx: lessonIdx, t: Date.now() }; saveLocal();
+  S.session = { kind: 'lesson', idx: lessonIdx, topic: LT, t: Date.now() }; saveLocal();
   const showContent = (why) => {
     const box = $('#lcontent', m);
     box.innerHTML = `<div class="card">${why ? `<div class="reason">${why}</div>` : ''}<h2 style="margin-top:0">${esc(L.h)}</h2><p>${esc(L.body)}</p>${L.facts.map(id => factHtml(FMAP[id])).join('')}</div>`;
@@ -925,7 +963,8 @@ VIEWS.lesson = (m) => {
     if (L.facts.length) save();
     $('#ln', m).disabled = false;
   };
-  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1 tabindex="-1">שיעור מודרך: עבודה בגובה</h1><span class="small muted">${lessonIdx + 1}/${LESSON.length}</span></div>
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1 tabindex="-1">שיעור מודרך: ${esc(TOPICS[LT].name)}</h1><span class="small muted">${lessonIdx + 1}/${LESSON.length}</span></div>
+  <div class="row topicbar" style="margin:4px 0 8px">${TOPIC_ORDER.map(t => `<button class="chip sm ${t === LT ? 'on' : ''}" data-lt="${t}" title="${esc(TOPICS[t].name)}">${esc(TOPICS[t].short)}</button>`).join('')}</div>
   <div class="steps">${LESSON.map((_, i) => `<span class="${i <= lessonIdx ? 'on' : ''}"></span>`).join('')}</div>
   ${L.check ? `<p class="small muted">${esc(L.h)} · נתחיל בשאלה. אם תענה נכון, תוכל לדלג על ההסבר.</p><div class="card" id="chk"></div>` : ''}
   <div id="lcontent" style="margin-top:12px"></div>
@@ -936,11 +975,15 @@ VIEWS.lesson = (m) => {
     if (r.ok) $('#readanyway').onclick = () => showContent(''); else showContent('בחרתי להציג את ההסבר, כי התשובה בשאלת הפתיחה לא הייתה נכונה.');
   } });
   else showContent('');
+  $$('[data-lt]', m).forEach(b => b.onclick = () => { lessonTopic = b.dataset.lt; lessonIdx = 0; route(); });
   $('#lp').onclick = () => { lessonIdx--; route(); };
   $('#ln').onclick = () => {
     if (lessonIdx < LESSON.length - 1) { lessonIdx++; route(); return; }
     lessonIdx = 0; S.session = null; saveLocal();
-    m.innerHTML = `<h1>סיימת את השיעור המודרך</h1><div class="card"><p>הקריאה נרשמה כחשיפה, ותשובות נכונות נרשמו כזיהוי.</p><p>השלב הבא, ליישום: <a class="btn primary" href="#scenario">תרחיש אינטראקטיבי</a></p></div>`;
+    const nextT = TOPIC_ORDER[(TOPIC_ORDER.indexOf(LT) + 1) % TOPIC_ORDER.length];
+    m.innerHTML = `<h1>סיימת את השיעור המודרך: ${esc(TOPICS[LT].name)}</h1><div class="card"><p>הקריאה נרשמה כחשיפה, ותשובות נכונות נרשמו כזיהוי.</p><p>השלב הבא, ליישום: ${LT === 'G' ? '<a class="btn primary" href="#scenario">תרחיש אינטראקטיבי</a>' : `<button class="btn primary" id="lapply">תרחישי החלטה בנושא – 5 דק'</button>`} <button class="btn" id="lnext">השיעור הבא: ${esc(TOPICS[nextT].short)}</button></p></div>`;
+    const la = $('#lapply'); if (la) la.onclick = () => startQuick(5, 2, { comps: Object.keys(COMPS).filter(c => compTopic(c) === LT), reason: `יישום אחרי השיעור המודרך: ${TOPICS[LT].name}.` });
+    $('#lnext').onclick = () => { lessonTopic = nextT; route(); };
   };
 };
 
@@ -1029,7 +1072,8 @@ function simSetup(m) {
   sim.mode = sim.mode || 'topic';
   const hasProj = !!(S.project && S.project.site);
   m.innerHTML = `<h1>סימולטור ועדת הסמכה</h1>
-  <div class="card"><h3>על מה הוועדה תשאל?</h3><div class="row">${[['topic', 'נושאי הקורס (עבודה בגובה)'], ['project', 'הגנה על פרויקט הגמר שלי']].map(([k, n]) => `<button class="chip ${sim.mode === k ? 'on' : ''}" data-mode="${k}">${n}</button>`).join('')}</div>
+  <div class="card"><h3>על מה הוועדה תשאל?</h3><div class="row">${[['topic', `נושאי הקורס (${topicName(curTopic())})`], ['project', 'הגנה על פרויקט הגמר שלי']].map(([k, n]) => `<button class="chip ${sim.mode === k ? 'on' : ''}" data-mode="${k}">${n}</button>`).join('')}</div>
+  ${sim.mode !== 'project' ? `<div class="row topicbar" style="margin-top:8px">${topicChips()}</div>` : ''}
   ${sim.mode === 'project' ? (hasProj ? `<p class="small muted" style="margin-top:8px">הפרויקט: ${esc(S.project.site)}. <a href="#project">עריכה</a></p>` : `<div class="fb warn">כדי לתרגל הגנה על הפרויקט, מלא קודם 4 שדות קצרים על הפרויקט שלך. <a class="btn sm primary" href="#project">מלא עכשיו</a></div>`) : ''}</div>
   <div class="card"><p>שלושה בוחנים מדומים בהתמחויות שונות. הם שואלים שאלות פתוחות, מקשיבים, מנתחים, שואלים שאלות המשך ומאתגרים טעויות. אפשר לענות בקול או בהקלדה.</p>
   <div class="row">${Object.values(EXAMINERS).map(e => `<span class="tag">${esc(e.name)}</span>`).join('')}</div>
@@ -1041,6 +1085,7 @@ function simSetup(m) {
   <h2>על הוועדה האמיתית (מאומת)</h2><div class="card"><ul>${COMMITTEE_INFO.map(c => `<li>${esc(c.t)} ${srcTags([c.src])}</li>`).join('')}</ul></div>`;
   $$('[data-len]', m).forEach(b => b.onclick = () => { sim.len = b.dataset.len; route(); });
   $$('[data-mode]', m).forEach(b => b.onclick = () => { sim.mode = b.dataset.mode; route(); });
+  wireTopicChips(m);
   $$('[data-pr]', m).forEach(b => b.onclick = () => { sim.pressure = b.dataset.pr; S.settings.pressure = sim.pressure; save(); route(); });
   $('#consent').onchange = e => { S.settings.consent = e.target.checked; save(); };
   $('#simgo').onclick = async () => {
@@ -1052,9 +1097,13 @@ function simSetup(m) {
       sim = Object.assign(sim, { phase: 'run', qs, qi: 0, stage: 'main', turns: [], scores: [], fuIdx: 0, startedAt: Date.now() });
       route(); return;
     }
-    const opens = Q.filter(q => q.type === 'open');
+    const opens = activeQ().filter(q => q.type === 'open');
     const weakSet = new Set(weakComps().slice(0, 4).map(w => w.c));
-    const qs = opens.map(q => ({ q, s: (weakSet.has(q.comp) ? 2 : 0) + Math.random() })).sort((a, b) => b.s - a.s).slice(0, n).map(x => x.q);
+    const ranked = opens.map(q => ({ q, s: (weakSet.has(q.comp) ? 2 : 0) + Math.random() })).sort((a, b) => b.s - a.s).map(x => x.q);
+    // פיזור: קודם שאלה אחת מכל פרק, ואז השלמה
+    const qs = []; const seenT = new Set();
+    ranked.forEach(q => { if (qs.length < n && !seenT.has(compTopic(q.comp))) { qs.push(q); seenT.add(compTopic(q.comp)); } });
+    ranked.forEach(q => { if (qs.length < n && !qs.includes(q)) qs.push(q); });
     // סדר: פתיחה בשאלה "רכה" יותר, סיום בשילוב תחומים
     qs.sort((a, b) => a.diff - b.diff);
     sim = Object.assign(sim, { phase: 'run', qs, qi: 0, stage: 'main', turns: [], scores: [], fuIdx: 0, startedAt: Date.now() });
@@ -1170,23 +1219,30 @@ VIEWS.more = (m) => {
 };
 VIEWS.map = (m) => {
   const rd = readiness();
-  m.innerHTML = `<h1>מפת שליטה – עבודה בגובה</h1>
+  const CK = Object.keys(COMPS); const msBy = Object.fromEntries(CK.map((c, i) => [c, rd.ms[i]]));
+  const row = c => { const mm = msBy[c]; return `<tr><td data-l="יעד">${esc(COMPS[c])}<div class="small muted">${mm.last ? `הצלחה אחרונה לפני ${mm.days} ימים${mm.ret < 1 ? ' · דעיכה' : ''}` : mm.exposures ? 'חשיפה בלבד, עוד אין ביצוע' : 'לא התחלת'}</div></td>
+  <td data-l="רמות"><div class="lvl">${LEVELS.map((l, k) => `<span class="${mm[l.k] ? (k === 0 ? 'exp' : 'on') : ''}" title="${l.n}"></span>`).join('')}</div><div class="small muted">${LEVELS.filter(l => mm[l.k]).map(l => l.n).slice(-1)[0] || '—'}</div></td>
+  <td data-l="ציון"><b>${mm.score}</b>${mm.selfOnly ? '<div class="small muted">הערכה עצמית בלבד</div>' : ''}</td><td data-l="ראיות" class="small">${mm.evidence} ביצוע · ${mm.exposures} חשיפה</td></tr>`; };
+  const tps = TOPIC_ORDER.filter(t => curTopic() === 'all' || t === curTopic());
+  const tAvg = t => { const cs = CK.filter(c => compTopic(c) === t); return Math.round(cs.reduce((a, c) => a + msBy[c].score, 0) / cs.length); };
+  m.innerHTML = `<h1>מפת שליטה – ${esc(topicName(curTopic()))}</h1>
+  <div class="row topicbar" style="margin:4px 0 8px">${topicChips()}</div>
+  <div class="card small"><b>ממוצע לפי פרק:</b> ${TOPIC_ORDER.map(t => `${esc(TOPICS[t].short)} <b>${tAvg(t)}</b>`).join(' · ')}</div>
   <p class="muted small">לכל יעד כשירות חמש רמות ראיה. הרמה הראשונה, "נחשפתי", מוצגת בגוון בהיר: היא נרשמת מהאזנה וקריאה ואינה נספרת בציון.</p>
   <div class="card"><table class="rtable"><tr><th>יעד כשירות</th><th style="width:36%">רמות</th><th>ציון</th><th>ראיות</th></tr>
-  ${rd.ms.map((mm, i) => { const c = Object.keys(COMPS)[i]; return `<tr><td data-l="יעד">${esc(COMPS[c])}<div class="small muted">${mm.last ? `הצלחה אחרונה לפני ${mm.days} ימים${mm.ret < 1 ? ' · דעיכה' : ''}` : mm.exposures ? 'חשיפה בלבד, עוד אין ביצוע' : 'לא התחלת'}</div></td>
-  <td data-l="רמות"><div class="lvl">${LEVELS.map((l, k) => `<span class="${mm[l.k] ? (k === 0 ? 'exp' : 'on') : ''}" title="${l.n}"></span>`).join('')}</div><div class="small muted">${LEVELS.filter(l => mm[l.k]).map(l => l.n).slice(-1)[0] || '—'}</div></td>
-  <td data-l="ציון"><b>${mm.score}</b>${mm.selfOnly ? '<div class="small muted">הערכה עצמית בלבד</div>' : ''}</td><td data-l="ראיות" class="small">${mm.evidence} ביצוע · ${mm.exposures} חשיפה</td></tr>`; }).join('')}</table></div>
+  ${tps.map(t => `<tr class="tgroup"><th colspan="4">${esc(TOPICS[t].name)} · ממוצע ${tAvg(t)}</th></tr>${CK.filter(c => compTopic(c) === t).map(row).join('')}`).join('')}</table></div>
   <h2>איך מחושב מדד המוכנות</h2><div class="card small"><p>לכל יעד: זיהוי נכון (לפחות 2 הצלחות, והאחרונה נכונה) = 20; הסבר בלי עזרה (שאלה פתוחה ≥70, בלי לצפות בתשובה לדוגמה) = 25; יישום בתרחיש (הניסיון האחרון הצליח) = 25; שאלת ועדה בסימולטור ≥70 = 30. אחרי 14 יום בלי הצלחה הציון דועך בהדרגה עד 60% ממנו.</p>
   <p>הממוצע של היעדים הוא ${rd.avg}. <b>תנאי סף:</b> המדד לא עולה על ממוצע הביצועים בשאלות ועדה ועוד 15 נקודות, כי הוועדה בוחנת בעל פה. ${rd.capped ? `לכן המדד שלך הוא <b>${rd.score}</b>: כדי שיעלה צריך לתרגל שאלות ועדה.` : `המדד שלך: <b>${rd.score}</b>.`}</p>
-  <p><b>הערכה עצמית</b> נספרת כהוכחת שליטה רק אם הצלחת בה בשני ימים שונים. הערכת בוחן AI נספרת מיד. <b>כיסוי ראיות</b> (${rd.coverage}) תלוי בכמות הביצועים ובמגוון סוגי המשימות. זה לא רווח סמך סטטיסטי.</p><p><b>מגבלות:</b> המדד מבוסס על שאלות מקוריות שנוצרו בסיוע AI ועל הערכה אוטומטית או עצמית. הוא מכסה רק את נושא העבודה בגובה ואינו הסתברות מעבר.</p></div>`;
+  <p><b>הערכה עצמית</b> נספרת כהוכחת שליטה רק אם הצלחת בה בשני ימים שונים. הערכת בוחן AI נספרת מיד. <b>כיסוי ראיות</b> (${rd.coverage}) תלוי בכמות הביצועים ובמגוון סוגי המשימות. זה לא רווח סמך סטטיסטי.</p><p><b>מגבלות:</b> המדד מבוסס על שאלות מקוריות שנוצרו בסיוע AI ועל הערכה אוטומטית או עצמית. הוא מכסה את כל 11 פרקי הקורס (מדד כולל = ממוצע כל היעדים) ואינו הסתברות מעבר.</p></div>`;
+  wireTopicChips(m);
 };
 VIEWS.plan = (m) => {
   const daysTo = S.settings.examDate ? Math.ceil((new Date(S.settings.examDate) - Date.now()) / DAY) : null;
   const weeks = daysTo ? Math.max(1, Math.ceil(daysTo / 7)) : null;
   const w = weakComps();
   m.innerHTML = `<h1>תוכנית לימודים</h1>
-  <div class="card"><h3>מפת הקורס (מתוך תוכנית הקורס בפועל)</h3><table>${COURSE_MAP.map(c => `<tr><td>פרק ${c.id === 'K' ? 'י"א' : 'אבגדהוזחטי'['ABCDEFGHIJ'.indexOf(c.id)]}'</td><td>${esc(c.name)}</td><td>${c.built ? '<span class="tag law">פעיל – 9 מסלולים</span>' : '<span class="tag">טרם הושלם</span>'}</td></tr>`).join('')}</table>
-  <p class="small muted">כרגע נבנה נושא אחד במלואו, כמסלול אנכי. שאר הנושאים יתווספו באותה תבנית.</p></div>
+  <div class="card"><h3>מפת הקורס (מתוך תוכנית הקורס בפועל)</h3><table>${COURSE_MAP.map(c => `<tr><td>פרק ${c.id === 'K' ? 'י"א' : 'אבגדהוזחטי'['ABCDEFGHIJ'.indexOf(c.id)]}'</td><td>${esc(c.name)}</td><td>${c.built ? `<span class="tag law">פעיל – 9 מסלולים</span> <span class="small muted">${Object.keys(COMPS).filter(k => compTopic(k) === c.id).length} יעדים · ${Q.filter(q => compTopic(q.comp) === c.id).length} שאלות</span>` : '<span class="tag">טרם הושלם</span>'}</td></tr>`).join('')}</table>
+  <p class="small muted">כל 11 הפרקים פעילים באותה תבנית. "עבודה בגובה" הוא המעמיק ביותר (כולל תרחיש אינטראקטיבי ושלושה שיעורי אודיו). בשאר הפרקים יש שיעור מודרך, שיעור אודיו, שאלות בכל הרמות ושאלות ועדה.</p></div>
   <h2>תוכנית שבועית גמישה</h2><div class="card">
   ${daysTo == null ? '<p>לא הוגדר תאריך יעד. <a href="#settings">הגדר תאריך</a> והתוכנית תתאים את עצמה.</p>' : `<p>${daysTo} ימים לוועדה (כ-${weeks} שבועות).</p>`}
   <ol class="small"><li><b>השבוע:</b> חיזוק "${esc(COMPS[w[0].c])}" ו"${esc(COMPS[w[1].c])}". 4 סבבי 5 דקות, שיעור אודיו אחד ותרחיש אחד במחשב.</li>
@@ -1198,15 +1254,17 @@ VIEWS.plan = (m) => {
 };
 let bankFilter = { depth: 'all', comp: 'all' };
 VIEWS.bank = (m) => {
-  const list = Q.filter(q => (bankFilter.depth === 'all' || String(q.depth) === bankFilter.depth) && (bankFilter.comp === 'all' || q.comp === bankFilter.comp));
-  const cov = Object.keys(COMPS).map(c => ({ c, n: Q.filter(q => q.comp === c).length, t: new Set(Q.filter(q => q.comp === c).map(q => q.type)).size }));
-  m.innerHTML = `<h1>בנק שאלות</h1><p class="small muted">${Q.length} שאלות לנושא עבודה בגובה. כל השאלות מקוריות ונוצרו בסיוע AI על בסיס המקורות. אף אחת מהן אינה שאלה מוועדה אמיתית.</p>
+  if (bankFilter.comp !== 'all' && !inCur(bankFilter.comp)) bankFilter.comp = 'all';
+  const list = activeQ().filter(q => (bankFilter.depth === 'all' || String(q.depth) === bankFilter.depth) && (bankFilter.comp === 'all' || q.comp === bankFilter.comp));
+  const cov = activeComps().map(c => ({ c, n: Q.filter(q => q.comp === c).length, t: new Set(Q.filter(q => q.comp === c).map(q => q.type)).size }));
+  m.innerHTML = `<h1>בנק שאלות</h1><div class="row topicbar" style="margin:4px 0 8px">${topicChips()}</div><p class="small muted">${activeQ().length} שאלות (${esc(topicName(curTopic()))}), מתוך ${Q.length} בכל הקורס. כל השאלות מקוריות ונוצרו בסיוע AI על בסיס המקורות. אף אחת מהן אינה שאלה מוועדה אמיתית.</p>
   <div class="card small"><b>כיסוי לפי יעד:</b> ${cov.map(x => `${esc(COMPS[x.c])}: ${x.n} (${x.t} סוגים)`).join(' · ')}</div>
   <div class="row" style="margin:10px 0"><select id="fd"><option value="all">כל הרמות</option>${[1, 2, 3].map(d => `<option value="${d}" ${bankFilter.depth == d ? 'selected' : ''}>${DEPTH_NAME[d]}</option>`).join('')}</select>
-  <select id="fc"><option value="all">כל היעדים</option>${Object.entries(COMPS).map(([k, v]) => `<option value="${k}" ${bankFilter.comp === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
+  <select id="fc"><option value="all">כל היעדים</option>${Object.entries(COMPS).filter(([k]) => inCur(k)).map(([k, v]) => `<option value="${k}" ${bankFilter.comp === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
   <div class="card"><table><tr><th>שאלה</th><th>רמה</th><th>סוג</th><th>קושי</th><th>מקור</th><th>ביצוע</th><th></th></tr>
   ${list.map(q => { const r = S.srs[q.id]; return `<tr><td>${esc(q.q)}</td><td>${DEPTH_NAME[q.depth]}</td><td class="small">${{ mcq: 'רב-ברירה', tf: 'נכון/לא נכון', scenario: 'תרחיש', open: 'פתוחה' }[q.type]}</td><td>${'●'.repeat(q.diff)}</td><td>${srcTags(q.src)}</td><td class="small">${r ? `${r.n} ניסיונות${r.lastOk === false ? ' · אחרון שגוי' : ''}` : '—'}</td><td><button class="btn sm" data-try="${q.id}">תרגל</button></td></tr>`; }).join('')}</table>
   <p class="small muted">לכל שאלה נשמרים: יעד, רמה, קושי, סוג, תשובה או מחוון, הסבר, מקורות, טעויות שכיחות, נימוק לכל מסיח, תאריך בדיקה (${CHECKED}) וסטטוס בקרה ("נבדקה מול מקור"). ${ORIGIN}.</p></div><div id="try"></div>`;
+  wireTopicChips(m);
   $('#fd').onchange = e => { bankFilter.depth = e.target.value; route(); };
   $('#fc').onchange = e => { bankFilter.comp = e.target.value; route(); };
   $$('[data-try]', m).forEach(b => b.onclick = () => { const box = $('#try'); box.innerHTML = '<div class="card" style="margin-top:12px"></div>'; renderQuestion(box.firstChild, QMAP[b.dataset.try], { src: 'desk', onDone: () => { box.innerHTML = '<div class="fb ok">נשמר.</div>'; } }); box.scrollIntoView({ behavior: 'smooth' }); });
@@ -1219,10 +1277,11 @@ VIEWS.debriefs = (m) => {
 VIEWS.sources = (m) => {
   m.innerHTML = `<h1>ספריית מקורות</h1><p class="small muted">כל עובדה מקצועית מתויגת לפי סוג (חובה בדין / חומר הקורס / עיקרון מקצועי / הסבר לימודי) וסטטוס אימות. תאריך בדיקה: ${CHECKED}. פרשנות אינה מוצגת כהוראת חוק.</p>
   <div class="card"><table><tr><th>מזהה</th><th>מקור</th><th>סוג</th><th>פרסום</th><th>סטטוס</th></tr>${Object.entries(SOURCES).map(([k, s]) => `<tr id="src-${k}"><td><b>${k}</b></td><td><a href="${s.url}" target="_blank" rel="noopener">${esc(s.title)}</a><div class="small muted">${esc(s.via)}</div></td><td class="small">${esc(s.kind)}</td><td class="small">${esc(s.published)}</td><td class="small">${STATUS_LABEL[s.status]}</td></tr>`).join('')}</table></div>
-  <h2>עובדות במאגר (${FACTS.length})</h2>${Object.keys(COMPS).map(c => `<h3 style="margin-top:14px">${esc(COMPS[c])}</h3>${FACTS.filter(f => f.comp === c).map(factHtml).join('')}`).join('')}
+  <h2>עובדות במאגר (${FACTS.length})</h2>${TOPIC_ORDER.map(t => `<details${t === (curTopic() === 'all' ? '' : curTopic()) ? ' open' : ''}><summary><b>${esc(TOPICS[t].name)}</b> <span class="small muted">(${FACTS.filter(f => compTopic(f.comp) === t).length})</span></summary>${Object.keys(COMPS).filter(c => compTopic(c) === t).map(c => `<h3 style="margin-top:14px">${esc(COMPS[c])}</h3>${FACTS.filter(f => f.comp === c).map(factHtml).join('')}`).join('')}</details>`).join('')}
   <h2>פערים וסתירות שזוהו</h2><div class="card small"><ul>
   <li>חוברת הקורס מציינת מרחקי בטיחות מקווי חשמל (3.25 מ' עד 33 ק"ו, 5 מ' מעל) ותוקף בדיקת במה (6/14 חודשים). אלה לא אומתו מול נוסח רשמי, ולכן לא נכללו כעובדות "חובה בדין".</li>
   <li>החוברת מנסחת את פטורי הסולמות (4.5 / 6 / 10 מ') בצורה לא אחידה. באפליקציה הם מוצגים לפי ציטוטי התקנות בפרסומי מוס"ל (S5, S6).</li>
+  <li>ברוב הפרקים שאינם עבודה בגובה, העובדות נלקחו מחוברת הקורס (S12) ומסומנות "טעון אימות". מספרים כמו ספי מינוי ממונה (50/100), ועדת בטיחות (25), תדירויות בדיקה (14/26/6 חודשים) וטבלת הרעש (85 dB, 3 dB) מופיעים בחוברת, אבל טרם אומתו כאן מול הנוסח המלא. תקנות הממונים תוקנו ב-2025, ותקנות הרעש עשויות להתעדכן.</li>
   <li>נוהל הקורסים (S3) עודכן ב-2017. ב-2025 תוקנו תקנות הממונים (S8), ויש לוודא מול המכללה אם השתנה דבר בהליך הוועדה.</li></ul></div>`;
 };
 VIEWS.settings = (m) => {
@@ -1312,13 +1371,13 @@ VIEWS.welcome = (m) => {
 };
 
 /* ---------------- DIAGNOSTIC ---------------- */
-const DIAG_Q = ['q1', 'q5', 'q13', 'q10', 's5', 's8'];
+const DIAG_Q = ['Aq1', 'Bq3', 'Cq1', 'Dq1', 'Eq4', 'Fq2', 'q1', 'Hq1', 'Iq4', 'Jq3', 'Kq1'];  // שאלה אחת מכל פרק
 const CONF = [['sure', 'בטוח'], ['mid', 'די בטוח'], ['guess', 'מנחש']];
 let diagRun = null;
 VIEWS.diag = (m) => {
   if (!diagRun) {
-    m.innerHTML = `<h1>שאלון אבחון</h1><div class="card"><p>6 שאלות קצרות על נושאי המפתח בעבודה בגובה. בכל שאלה תסמן גם עד כמה אתה בטוח בתשובה. בסוף אפשר לנסות שאלת ועדה אחת, או לדלג.</p>
-    <p class="small muted">התשובות הנכונות יוצגו בסוף, בדוח. משך משוער: 3 דקות.</p><button class="btn primary big" id="dstart">התחל</button></div>`;
+    m.innerHTML = `<h1>שאלון אבחון</h1><div class="card"><p>11 שאלות קצרות, אחת מכל פרק בקורס. בכל שאלה תסמן גם עד כמה אתה בטוח בתשובה. בסוף אפשר לנסות שאלת ועדה אחת, או לדלג.</p>
+    <p class="small muted">התשובות הנכונות יוצגו בסוף, בדוח. משך משוער: 5 דקות.</p><button class="btn primary big" id="dstart">התחל</button></div>`;
     $('#dstart').onclick = () => { diagRun = { i: 0, ans: [], t0: Date.now() }; route(); };
     return;
   }
@@ -1343,7 +1402,7 @@ VIEWS.diag = (m) => {
     return;
   }
   if (d.i === DIAG_Q.length) {
-    const q = QMAP.o1;
+    const q = QMAP.Co1;
     m.innerHTML = `<div class="row" style="justify-content:space-between"><h1 style="font-size:1.05rem;margin:0">אבחון · שאלת ועדה</h1><button class="btn ghost sm" id="dskip">דלג וסיים</button></div><div class="card" id="dopen"></div>`;
     renderOpen($('#dopen'), q, { src: 'diag', onDone: r => { d.open = { score: r.score, by: r.eval?.by }; d.i++; finishDiag(); } });
     $('#dskip').onclick = () => { d.i++; finishDiag(); };
@@ -1380,7 +1439,7 @@ VIEWS.report = (m) => {
   const over = confEv.filter(e => e.conf === 'sure' && !e.ok).length;
   const under = confEv.filter(e => e.conf === 'guess' && e.ok).length;
   const sureAcc = acc(confEv.filter(e => e.conf === 'sure'));
-  const comps = Object.keys(COMPS).map(c => ({ c, m: mastery(c), diag: D?.ans.find(a => a.comp === c) }));
+  const comps = activeComps().map(c => ({ c, m: mastery(c), diag: D?.ans.find(a => a.comp === c) }));
   const strengths = comps.filter(x => x.m.score >= 45 || (x.diag?.ok && x.diag.conf === 'sure')).slice(0, 4);
   const focus = comps.slice().sort((a, b) => (a.m.score - (a.diag?.ok ? 10 : 0) + (a.diag && a.diag.conf === 'sure' && !a.diag.ok ? -15 : 0)) - (b.m.score - (b.diag?.ok ? 10 : 0) + (b.diag && b.diag.conf === 'sure' && !b.diag.ok ? -15 : 0))).filter(x => x.m.score < 70).slice(0, 3);
   const deepen = comps.filter(x => (x.m.recognized || x.m.applied || x.diag?.ok) && !x.m.committee && !focus.includes(x)).slice(0, 3);
@@ -1421,7 +1480,7 @@ VIEWS.report = (m) => {
   <li>בדרך: האזנה לשיעור "${esc(AUDIO.find(a => a.id === recommend('audio').lesson).title)}", ואחריה תרגול על אותו חומר.</li>
   <li>פעם בשבוע: סימולציית ועדה מלאה ותחקיר.</li>
   <li>כל יום: חזרה מרווחת קצרה. ${Q.filter(q => isDue(q.id)).length} שאלות ממתינות כרגע.</li></ol>
-  <p class="muted">כיסוי הקורס: נושא 1 מתוך 11 פעיל (עבודה בגובה). שאר הנושאים יתווספו, וההמלצות יתרחבו אליהם.</p></div>
+  <p class="muted">כיסוי: כל 11 פרקי הקורס פעילים. ההמלצות מחושבות על הנושא הפעיל (${esc(topicName(curTopic()))}).</p></div>
   </details>
   ${D ? `<details class="card" style="margin-top:12px"><summary>תשובות האבחון</summary><ul class="small">${D.ans.map(a => { const q = QMAP[a.qid]; const right = q.options.find(o => o.ok); return `<li style="margin:6px 0">${a.ok ? '✅' : '❌'} ${esc(q.q)}<br><span class="muted">התשובה הנכונה: ${esc(right.t)}. ${esc(right.why)}</span></li>`; }).join('')}</ul><a class="btn sm" href="#diag" id="rediag">אבחון חוזר</a></details>` : ''}`;
   $$('[data-focus]', m).forEach(b => b.onclick = () => { const c = b.dataset.focus; const dpt = autoDepth(c) === 3 ? 2 : autoDepth(c); startQuick(5, dpt, { comps: [c], reason: `מיקוד מהדוח: "${COMPS[c]}". ${whyFocus(comps.find(x => x.c === c))}` }); });
